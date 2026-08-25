@@ -14,6 +14,7 @@ import dev.brahmkshatriya.echo.extension.ModelTypeHelper
 import dev.brahmkshatriya.echo.extension.toTrack
 import dev.toastbits.ytmkt.impl.youtubei.YoutubeiApi
 import dev.toastbits.ytmkt.model.external.ThumbnailProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import dev.brahmkshatriya.echo.common.helpers.PagedData
@@ -38,19 +39,35 @@ class RadioGenerator(
     private suspend fun generateFromTrack(track: Track, context: EchoMediaItem?): Radio {
         val id = "radio_${track.id}"
         val cont = context?.extras?.get("cont")
-        val result = api.SongRadio.getSongRadio(track.id, cont).getOrThrow()
-        val tracks = result.items.map { song: dev.toastbits.ytmkt.model.external.mediaitem.YtmSong -> 
-            song.toTrack(thumbnailQuality)
-        }
-        
-        return Radio(
-            id = id,
-            title = "${track.title} Radio",
-            extras = mutableMapOf<String, String>().apply {
-                put("tracks", json.encodeToString(tracks))
-                result.continuation?.let { put("cont", it) }
+
+        return try {
+            val result = api.SongRadio.getSongRadio(track.id, cont).getOrThrow()
+            val tracks = result.items.map { song: dev.toastbits.ytmkt.model.external.mediaitem.YtmSong ->
+                song.toTrack(thumbnailQuality)
             }
-        )
+
+            Radio(
+                id = id,
+                title = "${track.title} Radio",
+                extras = mutableMapOf<String, String>().apply {
+                    put("tracks", json.encodeToString(tracks))
+                    result.continuation?.let { put("cont", it) }
+                }
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Emergency fallback for YouTube /next response changes that make
+            // ytm-kt's SongRadio parser throw (for example missing musicQueueRenderer).
+            // Keep ordinary playback usable even when radio/autoplay is broken.
+            Radio(
+                id = id,
+                title = "${track.title} Radio",
+                extras = mutableMapOf(
+                    "tracks" to json.encodeToString(listOf(track))
+                )
+            )
+        }
     }
 
     private suspend fun generateFromAlbum(album: Album): Radio {
