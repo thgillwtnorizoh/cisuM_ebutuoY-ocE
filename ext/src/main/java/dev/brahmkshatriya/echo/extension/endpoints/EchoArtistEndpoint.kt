@@ -11,9 +11,14 @@ import dev.toastbits.ytmkt.model.external.mediaitem.YtmArtistBuilder
 import dev.toastbits.ytmkt.model.external.mediaitem.YtmArtistLayout
 import dev.toastbits.ytmkt.model.internal.HeaderRenderer
 import dev.toastbits.ytmkt.uistrings.parseYoutubeSubscribersString
-import io.ktor.client.call.body
 import io.ktor.client.request.request
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 
 class EchoArtistEndpoint(override val api: YoutubeiApi) : ApiEndpoint() {
@@ -37,13 +42,26 @@ class EchoArtistEndpoint(override val api: YoutubeiApi) : ApiEndpoint() {
         hl: String,
         api: YoutubeiApi
     ): Result<YtmArtist> = runCatching {
-        val parsed: YoutubeiBrowseResponse = response.body()
+        // Keep the raw JSON around because YouTube has introduced artist header
+        // models that are newer than the typed response model bundled here.
+        val responseText = response.bodyAsText()
+        val json = Json { ignoreUnknownKeys = true }
+        val root = json.parseToJsonElement(responseText).obj()
+            ?: throw IllegalStateException("Artist browse response was not a JSON object")
+        val parsed = json.decodeFromString<YoutubeiBrowseResponse>(responseText)
+
         val builder = YtmArtistBuilder(artistId)
         val header = parsed.header
 
-        // Newer YouTube Music artist pages can use musicElementHeaderRenderer.
-        // The old parser ignored this renderer completely, leaving the artist
-        // ID valid but the display name null -> "Unknown" in Echo.
+        // Current artist pages may put the visible artist name here:
+        // musicElementHeaderRenderer -> ... -> model -> youtubeModel
+        // -> musicPageHeaderModel -> title.
+        // This shape is not represented by YoutubeiBrowseResponse yet, so read
+        // it directly instead of making the entire response model chase Google.
+        findRawModernArtistName(root)?.let { builder.name = it }
+
+        // Another newer YouTube Music header shape used by albums and some
+        // artist-page variants.
         val elementData = header
             ?.musicElementHeaderRenderer
             ?.elementRenderer
@@ -56,10 +74,14 @@ class EchoArtistEndpoint(override val api: YoutubeiApi) : ApiEndpoint() {
             ?.data
 
         if (elementData != null) {
-            (elementData.title ?: elementData.formattedTitle?.content)
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-                ?.let { builder.name = it }
+            if (builder.name.isNullOrBlank()) {
+                (elementData.title
+                    ?: elementData.formattedTitle?.content
+                    ?: elementData.straplineData?.textLine1?.content)
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { builder.name = it }
+            }
 
             elementData.formattedDescription?.content
                 ?.takeIf { it.isNotBlank() }
@@ -142,4 +164,38 @@ class EchoArtistEndpoint(override val api: YoutubeiApi) : ApiEndpoint() {
 
         return@runCatching builder.build()
     }
+
+    private fun findRawModernArtistName(root: JsonObject): String? {
+        val model = root["header"].obj()
+            ?.get("musicElementHeaderRenderer").obj()
+            ?.get("elementRenderer").obj()
+            ?.get("elementRenderer").obj()
+            ?.get("newElement").obj()
+            ?.get("type").obj()
+            ?.get("componentType").obj()
+            ?.get("model").obj()
+            ?: return null
+
+        val musicPageTitle = model["youtubeModel"].obj()
+            ?.get("musicPageHeaderModel").obj()
+            ?.get("title").str()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        if (musicPageTitle != null) return musicPageTitle
+
+        // Keep raw fallbacks for A/B variants whose typed model is also stale.
+        val data = model["musicBlurredBackgroundHeaderModel"].obj()
+            ?.get("data").obj()
+            ?: return null
+
+        return sequenceOf(
+            data["title"].str(),
+            data["formattedTitle"].obj()?.get("content").str(),
+            data["straplineData"].obj()?.get("textLine1").obj()?.get("content").str()
+        ).mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
+            .firstOrNull()
+    }
+
+    private fun JsonElement?.obj(): JsonObject? = this as? JsonObject
+    private fun JsonElement?.str(): String? = (this as? JsonPrimitive)?.contentOrNull
 }
