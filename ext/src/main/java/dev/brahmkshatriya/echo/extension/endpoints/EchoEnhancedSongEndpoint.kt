@@ -1,5 +1,6 @@
 package dev.brahmkshatriya.echo.extension.endpoints
 
+import dev.brahmkshatriya.echo.common.models.Artist
 import dev.brahmkshatriya.echo.common.models.Streamable
 import dev.brahmkshatriya.echo.common.models.Track
 import dev.brahmkshatriya.echo.extension.toTrack
@@ -12,7 +13,8 @@ import dev.toastbits.ytmkt.model.external.ThumbnailProvider
  */
 class EchoEnhancedSongEndpoint(
     private val api: YoutubeiApi,
-    private val echoSongEndpoint: EchoSongEndPoint
+    private val echoSongEndpoint: EchoSongEndPoint,
+    private val videoEndpoint: EchoVideoEndpoint
 ) {
     /**
      * Load track data by combining ytm-kt LoadSong and custom EchoSongEndpoint.
@@ -48,11 +50,13 @@ class EchoEnhancedSongEndpoint(
                 }.getOrNull()
 
                 val mergedExtras = buildMergedExtras(ytmTrack, legacyTrack, trackId, fallbackTrack)
-                return mergeWithYtmPriority(ytmTrack, legacyTrack, fallbackTrack, mergedExtras)
+                val merged = mergeWithYtmPriority(ytmTrack, legacyTrack, fallbackTrack, mergedExtras)
+                return ensureUploaderArtist(trackId, merged)
             } else {
                 println("ytm-kt track has all required extras, skipping legacy fetch")
                 val mergedExtras = buildMergedExtras(ytmTrack, null, trackId, fallbackTrack)
-                return mergeWithYtmPriority(ytmTrack, null, fallbackTrack, mergedExtras)
+                val merged = mergeWithYtmPriority(ytmTrack, null, fallbackTrack, mergedExtras)
+                return ensureUploaderArtist(trackId, merged)
             }
         }
 
@@ -64,10 +68,44 @@ class EchoEnhancedSongEndpoint(
 
         val mergedExtras = buildMergedExtras(null, legacyTrack, trackId, fallbackTrack)
 
-        return when {
+        val merged = when {
             legacyTrack != null -> mergeWithLegacyPriority(legacyTrack, fallbackTrack, mergedExtras)
             else -> createFallbackTrack(fallbackTrack, mergedExtras, trackId)
         }
+        return ensureUploaderArtist(trackId, merged)
+    }
+
+    /**
+     * Last-resort artist recovery for ordinary YouTube uploads.
+     *
+     * YouTube Music's song/next responses can contain a perfectly playable video
+     * while exposing no MUSIC_PAGE_TYPE_ARTIST entry. The standard YouTube
+     * /player response still carries the uploader as videoDetails.author and
+     * videoDetails.channelId, so use that only when every music-specific source
+     * left the artist list empty.
+     */
+    private suspend fun ensureUploaderArtist(trackId: String, track: Track): Track {
+        if (track.artists.isNotEmpty()) return track
+
+        val details = runCatching {
+            videoEndpoint.getVideo(resolve = false, id = trackId).first.videoDetails
+        }.onFailure {
+            println("Failed to recover uploader for $trackId: ${it.message}")
+        }.getOrNull() ?: return track
+
+        val author = details.author?.trim()?.takeIf { it.isNotEmpty() } ?: return track
+        val channelId = details.channelId?.trim()?.takeIf { it.isNotEmpty() }
+            ?: "youtube_uploader_${author.hashCode()}"
+
+        println("Recovered YouTube uploader for $trackId: $author ($channelId)")
+        return track.copy(
+            artists = listOf(
+                Artist(
+                    id = channelId,
+                    name = author
+                )
+            )
+        )
     }
 
     /**
