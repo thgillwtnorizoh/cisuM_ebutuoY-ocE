@@ -1,6 +1,6 @@
 # Youtube Music Extension for Echo
 
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/Abhishek890/Eco-Youtube_Music?style=for-the-badge&logo=github)](https://github.com/Abhishek890/Eco-Youtube_Music/releases/latest)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/thgillwtnorizoh/cisuM_ebutuoY-ocE?style=for-the-badge&logo=github)](https://github.com/thgillwtnorizoh/cisuM_ebutuoY-ocE/releases/latest)
 
 This extension powers YouTube Music support inside Echo using a combination of:
 - **[YTM-kt](https://gitlab.com/syk.sh/ytm-kt)** for fetching all YouTube Music data  
