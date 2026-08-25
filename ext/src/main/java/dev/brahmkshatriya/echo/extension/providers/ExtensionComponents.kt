@@ -59,7 +59,7 @@ class ExtensionComponents(
     val editorEndpoint = EchoEditPlaylistEndpoint(api)
     
     val enhancedSongEndpoint by lazy {
-        EchoEnhancedSongEndpoint(api, songEndpoint)
+        EchoEnhancedSongEndpoint(api, songEndpoint, videoEndpoint)
     }
 
     //Services
