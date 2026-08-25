@@ -17,36 +17,36 @@ class EchoEnhancedSongEndpoint(
     /**
      * Load track data by combining ytm-kt LoadSong and custom EchoSongEndpoint.
      * Optimized to try ytm-kt first, then conditionally fetch legacy only if needed.
-     * 
+     *
      * @param trackId YouTube video/song ID
      * @param fallbackTrack Original track for fallback data
      * @param thumbnailQuality Quality for thumbnail images
      * @return Enhanced Track with merged data from both sources
      */
     suspend fun loadEnhancedTrack(
-        trackId: String, 
+        trackId: String,
         fallbackTrack: Track,
         thumbnailQuality: ThumbnailProvider.Quality
     ): Track {
         println("EchoEnhancedSongEndpoint: Loading track $trackId, fallback isVideo=${fallbackTrack.extras["isVideo"]}")
-        
+
         // Try ytm-kt first (faster, better quality data)
         val ytmTrack = runCatching {
             api.LoadSong.loadSong(trackId).getOrThrow()
         }.map { it.toTrack(thumbnailQuality) }.getOrNull()
-        
+
         if (ytmTrack != null) {
             // Check if we need legacy data for missing extras (lyricsId, relatedId, isLiked)
-            val needsLegacyExtras = ytmTrack.extras["lyricsId"] == null || 
+            val needsLegacyExtras = ytmTrack.extras["lyricsId"] == null ||
                                      ytmTrack.extras["relatedId"] == null ||
                                      ytmTrack.extras["isLiked"] == null
-            
+
             if (needsLegacyExtras) {
                 println("ytm-kt track missing extras, fetching from legacy endpoint")
                 val legacyTrack = runCatching {
                     echoSongEndpoint.loadSong(trackId).getOrThrow()
                 }.getOrNull()
-                
+
                 val mergedExtras = buildMergedExtras(ytmTrack, legacyTrack, trackId, fallbackTrack)
                 return mergeWithYtmPriority(ytmTrack, legacyTrack, fallbackTrack, mergedExtras)
             } else {
@@ -55,53 +55,53 @@ class EchoEnhancedSongEndpoint(
                 return mergeWithYtmPriority(ytmTrack, null, fallbackTrack, mergedExtras)
             }
         }
-        
+
         // Fallback to legacy if ytm-kt failed
         println("ytm-kt failed, trying legacy endpoint")
         val legacyTrack = runCatching {
             echoSongEndpoint.loadSong(trackId).getOrThrow()
         }.getOrNull()
-        
+
         val mergedExtras = buildMergedExtras(null, legacyTrack, trackId, fallbackTrack)
-        
+
         return when {
             legacyTrack != null -> mergeWithLegacyPriority(legacyTrack, fallbackTrack, mergedExtras)
             else -> createFallbackTrack(fallbackTrack, mergedExtras, trackId)
         }
     }
-    
+
     /**
      * Build merged extras map from all available sources.
      */
     private fun buildMergedExtras(ytmTrack: Track?, legacyTrack: Track?, trackId: String, fallbackTrack: Track? = null): MutableMap<String, String> {
         return mutableMapOf<String, String>().apply {
             // Add ytm extras first (lowest priority)
-            ytmTrack?.extras?.let { 
+            ytmTrack?.extras?.let {
                 println("  ytm extras: $it")
-                putAll(it) 
+                putAll(it)
             }
-            
+
             // Add legacy extras (medium priority - contains lyricsId, relatedId, isLiked)
-            legacyTrack?.extras?.let { 
+            legacyTrack?.extras?.let {
                 println("  legacy extras: $it")
-                putAll(it) 
+                putAll(it)
             }
-            
+
             // Add fallback extras last (HIGHEST priority - preserves isVideo!)
-            fallbackTrack?.extras?.let { 
+            fallbackTrack?.extras?.let {
                 println("  fallback extras: $it")
-                putAll(it) 
+                putAll(it)
             }
-            
+
             // Ensure videoId is always present
             if (!containsKey("videoId")) {
                 put("videoId", trackId)
             }
-            
+
             println("  final merged isVideo=${get("isVideo")}")
         }
     }
-    
+
     /**
      * Merge strategy when ytm-kt track is available (preferred source).
      * Falls back to legacy/original track for missing fields.
@@ -118,28 +118,35 @@ class EchoEnhancedSongEndpoint(
         } else {
             createDefaultStreamable(mergedExtras["videoId"]!!)
         }
-        
+
+        // Empty lists are not useful metadata. Prefer the first source that
+        // actually contains an artist instead of allowing an empty legacy list
+        // to overwrite a correct artist already present on the queue item.
+        val artists = when {
+            ytmTrack.artists.isNotEmpty() -> ytmTrack.artists
+            !legacyTrack?.artists.isNullOrEmpty() -> legacyTrack!!.artists
+            fallbackTrack.artists.isNotEmpty() -> fallbackTrack.artists
+            else -> emptyList()
+        }
+
         return ytmTrack.copy(
             // Prefer ytm cover, fallback to original then legacy
             cover = ytmTrack.cover ?: fallbackTrack.cover ?: legacyTrack?.cover,
-            
+
             // Prefer ytm album, fallback to legacy
             album = ytmTrack.album ?: legacyTrack?.album,
-            
-            // Prefer ytm artists if non-empty, fallback to legacy then original
-            artists = if (ytmTrack.artists.isNotEmpty()) 
-                ytmTrack.artists 
-            else 
-                legacyTrack?.artists ?: fallbackTrack.artists,
-            
+
+            // Preserve whichever source actually has non-empty artist metadata.
+            artists = artists,
+
             // Add streamables - THIS WAS MISSING!
             streamables = streamables,
-            
+
             // Use merged extras with all available metadata
             extras = mergedExtras
         )
     }
-    
+
     /**
      * Merge strategy when only legacy track is available.
      * Ensures streamables are always present.
@@ -150,12 +157,15 @@ class EchoEnhancedSongEndpoint(
         mergedExtras: Map<String, String>
     ): Track {
         return legacyTrack.copy(
+            // A legacy response can exist while still containing no artists.
+            // In that case keep the artist metadata from the original queue item.
+            artists = legacyTrack.artists.takeIf { it.isNotEmpty() } ?: fallbackTrack.artists,
             extras = mergedExtras,
-            streamables = legacyTrack.streamables.takeIf { it.isNotEmpty() } 
+            streamables = legacyTrack.streamables.takeIf { it.isNotEmpty() }
                 ?: createDefaultStreamable(mergedExtras["videoId"]!!)
         )
     }
-    
+
     /**
      * Create fallback track when both API calls fail.
      * Uses original track data with enhanced streamables.
@@ -171,7 +181,7 @@ class EchoEnhancedSongEndpoint(
                 ?: createDefaultStreamable(trackId)
         )
     }
-    
+
     /**
      * Create default streamable configuration.
      */
