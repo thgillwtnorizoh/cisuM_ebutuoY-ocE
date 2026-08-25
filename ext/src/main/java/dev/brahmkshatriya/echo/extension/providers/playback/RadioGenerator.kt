@@ -11,6 +11,7 @@ import dev.brahmkshatriya.echo.common.models.Radio
 import dev.brahmkshatriya.echo.common.models.Track
 import dev.brahmkshatriya.echo.common.models.User
 import dev.brahmkshatriya.echo.extension.ModelTypeHelper
+import dev.brahmkshatriya.echo.extension.endpoints.PatchedSongRadioEndpoint
 import dev.brahmkshatriya.echo.extension.toTrack
 import dev.toastbits.ytmkt.impl.youtubei.YoutubeiApi
 import dev.toastbits.ytmkt.model.external.ThumbnailProvider
@@ -26,6 +27,11 @@ class RadioGenerator(
     private val thumbnailQuality: ThumbnailProvider.Quality,
     private val trackCache: MutableMap<String, PagedData<Track>>
 ) {
+    // ytm-kt 0.4.3's built-in SongRadio parser assumes every watch-next tab
+    // contains musicQueueRenderer. YouTube no longer guarantees that, so use
+    // our tolerant raw-JSON endpoint for song radio only.
+    private val songRadioEndpoint = PatchedSongRadioEndpoint(api)
+
     suspend fun generateRadio(item: EchoMediaItem, context: EchoMediaItem? = null): Radio {
         return when (item) {
             is Track -> generateFromTrack(item, context)
@@ -41,7 +47,7 @@ class RadioGenerator(
         val cont = context?.extras?.get("cont")
 
         return try {
-            val result = api.SongRadio.getSongRadio(track.id, cont).getOrThrow()
+            val result = songRadioEndpoint.getSongRadio(track.id, cont).getOrThrow()
             val tracks = result.items.map { song: dev.toastbits.ytmkt.model.external.mediaitem.YtmSong ->
                 song.toTrack(thumbnailQuality)
             }
@@ -57,9 +63,8 @@ class RadioGenerator(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // Emergency fallback for YouTube /next response changes that make
-            // ytm-kt's SongRadio parser throw (for example missing musicQueueRenderer).
-            // Keep ordinary playback usable even when radio/autoplay is broken.
+            // Last-resort parachute. If YouTube changes /next yet again, keep
+            // ordinary playback usable instead of crashing the extension.
             Radio(
                 id = id,
                 title = "${track.title} Radio",
@@ -79,10 +84,10 @@ class RadioGenerator(
     private suspend fun generateFromArtist(artist: Artist): Radio {
         val id = "radio_${artist.id}"
         val result = api.ArtistRadio.getArtistRadio(artist.id, null).getOrThrow()
-        val tracks = result.items.map { song: dev.toastbits.ytmkt.model.external.mediaitem.YtmSong -> 
+        val tracks = result.items.map { song: dev.toastbits.ytmkt.model.external.mediaitem.YtmSong ->
             song.toTrack(thumbnailQuality)
         }
-        
+
         return Radio(
             id = id,
             title = "${artist.name} Radio",
@@ -104,8 +109,8 @@ class RadioGenerator(
     }
 
     fun loadRadioTracks(radio: Radio): Feed<Track> {
-        return PagedData.Single { 
-            val tracksJson = radio.extras["tracks"] 
+        return PagedData.Single {
+            val tracksJson = radio.extras["tracks"]
                 ?: throw Exception("No tracks found in radio")
             json.decodeFromString<List<Track>>(tracksJson)
         }.toFeed()
