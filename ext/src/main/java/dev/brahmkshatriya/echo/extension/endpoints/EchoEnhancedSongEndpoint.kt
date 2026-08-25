@@ -78,22 +78,43 @@ class EchoEnhancedSongEndpoint(
     /**
      * Last-resort artist recovery for ordinary YouTube uploads.
      *
-     * YouTube Music's song/next responses can contain a perfectly playable video
-     * while exposing no MUSIC_PAGE_TYPE_ARTIST entry. The standard YouTube
-     * /player response still carries the uploader as videoDetails.author and
-     * videoDetails.channelId, so use that only when every music-specific source
-     * left the artist list empty.
+     * This diagnostic build deliberately puts a DEBUG marker into the artist field
+     * when /player recovery fails. If Echo still displays plain "Unknown", then
+     * loadTrackDetails() is not the metadata path used by the player UI and the
+     * bug must be fixed earlier when the original Track is constructed.
      */
     private suspend fun ensureUploaderArtist(trackId: String, track: Track): Track {
         if (track.artists.isNotEmpty()) return track
 
-        val details = runCatching {
+        val result = runCatching {
             videoEndpoint.getVideo(resolve = false, id = trackId).first.videoDetails
-        }.onFailure {
-            println("Failed to recover uploader for $trackId: ${it.message}")
-        }.getOrNull() ?: return track
+        }
 
-        val author = details.author?.trim()?.takeIf { it.isNotEmpty() } ?: return track
+        val details = result.getOrElse { error ->
+            println("Failed to recover uploader for $trackId: ${error.message}")
+            return track.copy(
+                artists = listOf(
+                    Artist(
+                        id = "debug_player_error_$trackId",
+                        name = "DEBUG: /player request failed (${error::class.simpleName ?: "error"})"
+                    )
+                )
+            )
+        }
+
+        val author = details.author?.trim()?.takeIf { it.isNotEmpty() }
+        if (author == null) {
+            println("/player returned no author for $trackId; channelId=${details.channelId}")
+            return track.copy(
+                artists = listOf(
+                    Artist(
+                        id = details.channelId ?: "debug_no_author_$trackId",
+                        name = "DEBUG: /player author missing"
+                    )
+                )
+            )
+        }
+
         val channelId = details.channelId?.trim()?.takeIf { it.isNotEmpty() }
             ?: "youtube_uploader_${author.hashCode()}"
 
