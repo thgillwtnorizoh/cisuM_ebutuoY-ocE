@@ -39,13 +39,80 @@ class EchoArtistEndpoint(override val api: YoutubeiApi) : ApiEndpoint() {
     ): Result<YtmArtist> = runCatching {
         val parsed: YoutubeiBrowseResponse = response.body()
         val builder = YtmArtistBuilder(artistId)
+        val header = parsed.header
 
-        val headerRenderer: HeaderRenderer? = parsed.header?.getRenderer()
+        // Newer YouTube Music artist pages can use musicElementHeaderRenderer.
+        // The old parser ignored this renderer completely, leaving the artist
+        // ID valid but the display name null -> "Unknown" in Echo.
+        val elementData = header
+            ?.musicElementHeaderRenderer
+            ?.elementRenderer
+            ?.elementRenderer
+            ?.newElement
+            ?.type
+            ?.componentType
+            ?.model
+            ?.musicBlurredBackgroundHeaderModel
+            ?.data
+
+        if (elementData != null) {
+            (elementData.title ?: elementData.formattedTitle?.content)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { builder.name = it }
+
+            elementData.formattedDescription?.content
+                ?.takeIf { it.isNotBlank() }
+                ?.let { builder.description = it }
+
+            elementData.primaryImage?.sources
+                ?.let { ThumbnailProvider.fromThumbnails(it) }
+                ?.let { builder.thumbnail_provider = it }
+        }
+
+        // Some pages use musicDetailHeaderRenderer instead of the classic
+        // immersive/visual HeaderRenderer shape.
+        val detailHeader = header?.musicDetailHeaderRenderer
+        if (builder.name.isNullOrBlank() && detailHeader != null) {
+            detailHeader.title?.runs?.firstOrNull()?.text
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { builder.name = it }
+
+            detailHeader.byline
+                ?.musicDetailHeaderButtonsBylineRenderer
+                ?.description
+                ?.runs
+                ?.joinToString("") { it.text }
+                ?.takeIf { it.isNotBlank() }
+                ?.let { builder.description = it }
+
+            detailHeader.thumbnail
+                ?.croppedSquareThumbnailRenderer
+                ?.thumbnail
+                ?.thumbnails
+                ?.let { ThumbnailProvider.fromThumbnails(it) }
+                ?.let { builder.thumbnail_provider = it }
+        }
+
+        // Legacy artist header shapes.
+        val headerRenderer: HeaderRenderer? = header?.getRenderer()
         if (headerRenderer != null) {
-            builder.name = headerRenderer.title!!.first_text
-            builder.description = headerRenderer.description?.first_text
-            builder.thumbnail_provider =
-                ThumbnailProvider.fromThumbnails(headerRenderer.getThumbnails())
+            if (builder.name.isNullOrBlank()) {
+                headerRenderer.title?.first_text
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { builder.name = it }
+            }
+
+            if (builder.description.isNullOrBlank()) {
+                builder.description = headerRenderer.description?.first_text
+            }
+
+            if (builder.thumbnail_provider == null) {
+                builder.thumbnail_provider =
+                    ThumbnailProvider.fromThumbnails(headerRenderer.getThumbnails())
+            }
 
             headerRenderer.subscriptionButton?.subscribeButtonRenderer?.let { subscribeButton ->
                 builder.subscribe_channel_id = subscribeButton.channelId
@@ -75,5 +142,4 @@ class EchoArtistEndpoint(override val api: YoutubeiApi) : ApiEndpoint() {
 
         return@runCatching builder.build()
     }
-
 }
