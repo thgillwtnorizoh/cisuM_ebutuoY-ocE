@@ -140,14 +140,28 @@ class PatchedSongRadioEndpoint(
         return unwrapRenderer(primary)
     }
 
+    /**
+     * Recover the artist/uploader without assuming one exact YouTube byline shape.
+     *
+     * Music tracks usually expose an artist browse endpoint. Ordinary YouTube
+     * uploads may expose only a channel/uploader name, or put the artist target
+     * in the item's menu instead. Echo only needs a useful display artist, so a
+     * name-only YtmArtist is preferable to dropping the metadata as "Unknown".
+     */
     private fun parseArtists(renderer: JsonObject): List<YtmArtist>? {
-        val runs = renderer["longBylineText"].obj()
-            ?.get("runs").arr()
-            ?: return null
+        val runs = listOf("ownerText", "shortBylineText", "longBylineText")
+            .flatMap { key ->
+                renderer[key].obj()
+                    ?.get("runs").arr()
+                    .orEmpty()
+            }
 
-        val artists = runs.mapNotNull { element ->
+        // First choice: proper linked artist/channel runs.
+        val linkedArtists = runs.mapNotNull { element ->
             val run = element.obj() ?: return@mapNotNull null
-            val name = run["text"].str() ?: return@mapNotNull null
+            val name = run["text"].str()?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: return@mapNotNull null
             val browse = run["navigationEndpoint"].obj()
                 ?.get("browseEndpoint").obj()
                 ?: return@mapNotNull null
@@ -156,18 +170,64 @@ class PatchedSongRadioEndpoint(
                 ?.get("browseEndpointContextMusicConfig").obj()
                 ?.get("pageType").str()
 
-            // Artist endpoints normally declare MUSIC_PAGE_TYPE_ARTIST. Some
-            // responses omit the config, where a UC... channel id is still a
-            // strong artist signal.
-            if (pageType != "MUSIC_PAGE_TYPE_ARTIST" &&
-                !(pageType == null && id.startsWith("UC"))) {
+            // YTM artists normally declare MUSIC_PAGE_TYPE_ARTIST. YouTube
+            // uploader/channel links frequently omit pageType but still use a
+            // UC... channel ID, which is equally useful to Echo.
+            if (pageType != "MUSIC_PAGE_TYPE_ARTIST" && !id.startsWith("UC")) {
                 return@mapNotNull null
             }
 
             YtmArtist(id = id, name = name)
-        }.distinctBy { it.id }
+        }.distinctBy { it.id.ifEmpty { it.name.orEmpty() } }
 
-        return artists.takeIf { it.isNotEmpty() }
+        if (linkedArtists.isNotEmpty()) {
+            return linkedArtists
+        }
+
+        // Keep a sensible visible byline in reserve. This catches uploads where
+        // YouTube supplies the channel/uploader only as plain text.
+        val fallbackName = runs.asSequence()
+            .mapNotNull { it.obj()?.get("text").str()?.trim() }
+            .firstOrNull(::isPlausibleArtistName)
+
+        // ytm-kt's original parser also checks the item's menu for an ARTIST
+        // navigation target. Reproduce that fallback, but pair it with the
+        // visible byline instead of displaying a generic "Go to artist" label.
+        val menuItems = renderer["menu"].obj()
+            ?.get("menuRenderer").obj()
+            ?.get("items").arr()
+            .orEmpty()
+
+        for (item in menuItems) {
+            val navigationItem = item.obj()
+                ?.get("menuNavigationItemRenderer").obj()
+                ?: continue
+            val iconType = navigationItem["icon"].obj()
+                ?.get("iconType").str()
+            if (iconType != "ARTIST") {
+                continue
+            }
+
+            val id = navigationItem["navigationEndpoint"].obj()
+                ?.get("browseEndpoint").obj()
+                ?.get("browseId").str()
+                ?: continue
+
+            val name = fallbackName ?: continue
+            return listOf(YtmArtist(id = id, name = name))
+        }
+
+        // Last resort: a name-only artist is still better metadata than null.
+        // ytm-kt itself uses an empty artist ID for title-only artist fallbacks.
+        return fallbackName?.let { listOf(YtmArtist(id = "", name = it)) }
+    }
+
+    private fun isPlausibleArtistName(text: String): Boolean {
+        if (text.isBlank()) return false
+        if (text.all { it.isWhitespace() || it in "•·|-/" }) return false
+        if (text.matches(Regex("\\d{4}"))) return false
+        if (text.matches(Regex("\\d{1,2}:\\d{2}(:\\d{2})?"))) return false
+        return true
     }
 
     private fun extractContinuation(panel: JsonObject): String? {
