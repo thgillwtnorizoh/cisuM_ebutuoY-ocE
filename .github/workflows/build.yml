@@ -15,60 +15,100 @@ jobs:
       - name: Checkout radio-fixed base
         uses: actions/checkout@v4
 
-      - name: Resolve and collect ytm-kt 0.6.1
+      - name: Collect ytm-kt 0.6.1 GitLab source
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p inspection/downloads inspection/extracted
+          mkdir -p inspection
 
-          curl -fsSL 'https://search.maven.org/solrsearch/select?q=v:%220.6.1%22%20AND%20(g:%22dev.toastbits.ytmkt%22%20OR%20g:%22dev.toastbits%22)&rows=100&wt=json' \
-            -o inspection/search.json
+          REMOTE='https://gitlab.com/syk.sh/ytm-kt.git'
+          git ls-remote --heads --tags "$REMOTE" > inspection/remote-refs.txt
 
-          jq -r '.response.docs[] | [.g,.a,.v,.p] | @tsv' inspection/search.json \
-            | tee inspection/artifacts.tsv
+          git clone -q "$REMOTE" inspection/repo
+          cd inspection/repo
 
-          while IFS=$'\t' read -r group artifact version packaging; do
-            [ -n "$group" ] || continue
-            base="https://repo.maven.apache.org/maven2/${group//./\/}/$artifact/$version"
-            prefix="inspection/downloads/$artifact-$version"
+          git tag --sort=-version:refname > ../tags.txt
+          git branch -a > ../branches.txt
 
-            curl -fsSL "$base/$artifact-$version.pom" -o "$prefix.pom" || true
-            curl -fsSL "$base/$artifact-$version.module" -o "$prefix.module" || true
-            curl -fsSL "$base/$artifact-$version-sources.jar" -o "$prefix-sources.jar" || true
-          done < inspection/artifacts.tsv
+          if git rev-parse -q --verify 'refs/tags/0.6.1' >/dev/null; then
+            TARGET='0.6.1'
+          elif git rev-parse -q --verify 'refs/tags/v0.6.1' >/dev/null; then
+            TARGET='v0.6.1'
+          else
+            echo 'No 0.6.1 tag found' >&2
+            cat ../tags.txt >&2
+            exit 2
+          fi
 
-          for jar in inspection/downloads/*-sources.jar; do
-            [ -f "$jar" ] || continue
-            name=$(basename "$jar" .jar)
-            mkdir -p "inspection/extracted/$name"
-            unzip -q "$jar" -d "inspection/extracted/$name"
+          git checkout -q --detach "$TARGET"
+          git rev-parse HEAD > ../target-commit.txt
+          git log -1 --format=fuller > ../target-commit-details.txt
+          git log --oneline --decorate -30 > ../recent-log.txt
+          find . -type f -not -path './.git/*' | sort > ../source-files.txt
+
+          BASE=''
+          for candidate in 0.5.0-legacy v0.5.0-legacy 0.5.0 v0.5.0; do
+            if git rev-parse -q --verify "refs/tags/$candidate" >/dev/null; then
+              BASE="$candidate"
+              break
+            fi
           done
+          printf '%s\n' "$BASE" > ../comparison-base.txt
 
-          find inspection/extracted -type f | sort > inspection/source-files.txt
+          if [ -n "$BASE" ]; then
+            git log --oneline --decorate "$BASE..$TARGET" > ../changes-since-0.5.txt
+            git diff --stat "$BASE..$TARGET" > ../diff-stat-since-0.5.txt
+            git diff "$BASE..$TARGET" -- \
+              'library/src/**/YTMLoadSongEndpoint.kt' \
+              'library/src/**/YTMGetSongFeedEndpoint.kt' \
+              'library/src/**/YoutubeiApi.kt' \
+              'library/src/**/YoutubeiAuthenticationState.kt' \
+              'library/src/**/*Radio*.kt' \
+              'library/src/**/YtmArtist.kt' \
+              'library/src/**/YtmSong.kt' \
+              > ../focused-diff-since-0.5.patch || true
+          fi
+
+          mkdir -p ../high-value
+          find . -type f \
+            \( -name 'YTMLoadSongEndpoint.kt' \
+            -o -name 'YTMGetSongFeedEndpoint.kt' \
+            -o -name 'YoutubeiApi.kt' \
+            -o -name 'YoutubeiAuthenticationState.kt' \
+            -o -name 'YtmArtist.kt' \
+            -o -name 'YtmSong.kt' \
+            -o -name '*Radio*Endpoint.kt' \
+            -o -name '*Radio*.kt' \
+            -o -name 'build.gradle.kts' \
+            -o -name 'gradle.properties' \
+            -o -name 'README.md' \) \
+            -not -path './.git/*' -print0 \
+            | while IFS= read -r -d '' f; do
+                dest="../high-value/${f#./}"
+                mkdir -p "$(dirname "$dest")"
+                cp "$f" "$dest"
+              done
 
           grep -RniE \
-            'YTMLoadSongEndpoint|YTMGetSongFeedEndpoint|YoutubeiApi|YoutubeiAuthenticationState|videoDetails|author|channelId|addApiHeadersWithAuthenticated|SAPISID|cookie|SongFeed|RadioBuilder|RadioEndpoint|isAudioOnly' \
-            inspection/extracted > inspection/relevant-grep.txt || true
+            'videoDetails|author|channelId|addApiHeadersWithAuthenticated|SAPISID|cookie|authentication|SongFeed|RadioBuilder|RadioEndpoint|isAudioOnly|visitorData|accountName' \
+            . --exclude-dir=.git > ../relevant-grep.txt || true
 
-          {
-            echo '=== exact high-value source files ==='
-            find inspection/extracted -type f \
-              \( -name 'YTMLoadSongEndpoint.kt' \
-              -o -name 'YTMGetSongFeedEndpoint.kt' \
-              -o -name 'YoutubeiApi.kt' \
-              -o -name 'YoutubeiAuthenticationState.kt' \
-              -o -name 'YtmArtist.kt' \
-              -o -name 'YtmSong.kt' \
-              -o -name '*Radio*Endpoint.kt' \
-              -o -name '*Radio*.kt' \) -print | sort
-          } > inspection/high-value-files.txt
+          cd ..
+          rm -rf repo/.git
+          tar -czf ytm-kt-0.6.1-source.tar.gz repo
 
-          cat inspection/artifacts.tsv
-          cat inspection/high-value-files.txt
+          echo '=== tag ==='
+          cat target-commit.txt
+          echo '=== available tags ==='
+          cat tags.txt
+          echo '=== comparison base ==='
+          cat comparison-base.txt
+          echo '=== changes ==='
+          cat changes-since-0.5.txt 2>/dev/null || true
 
       - name: Upload inspection bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ytm-kt-0.6.1-inspection
+          name: ytm-kt-0.6.1-gitlab-source
           path: inspection
           if-no-files-found: error
