@@ -31,6 +31,12 @@ class TrackLoader(
         track: Track,
         thumbnailQuality: ThumbnailProvider.Quality
     ): Track {
+        // Queue hydration may already have resolved this exact track through the
+        // enhanced endpoint. Reuse that known-good result instead of rebuilding
+        // it when Echo jumps directly to an arbitrary queue position.
+        detailsCache[track.id]
+            ?.takeIf { it.hasUsableArtistName() }
+            ?.let { return mergeQueueMetadata(track, it) }
 
         try {
             authManager.ensureVisitorId().getOrNull()
