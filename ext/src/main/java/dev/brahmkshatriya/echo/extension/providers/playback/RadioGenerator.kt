@@ -25,7 +25,8 @@ class RadioGenerator(
     private val api: YoutubeiApi,
     private val json: Json,
     private val thumbnailQuality: ThumbnailProvider.Quality,
-    private val trackCache: MutableMap<String, PagedData<Track>>
+    private val trackCache: MutableMap<String, PagedData<Track>>,
+    private val trackLoader: TrackLoader
 ) {
     // ytm-kt 0.4.3's built-in SongRadio parser assumes every watch-next tab
     // contains musicQueueRenderer. YouTube no longer guarantees that, so use
@@ -48,8 +49,11 @@ class RadioGenerator(
 
         return try {
             val result = songRadioEndpoint.getSongRadio(track.id, cont).getOrThrow()
-            val tracks = result.items.map { song: dev.toastbits.ytmkt.model.external.mediaitem.YtmSong ->
-                song.toTrack(thumbnailQuality)
+            val tracks = buildList {
+                for (song in result.items) {
+                    val queueTrack = song.toTrack(thumbnailQuality)
+                    add(trackLoader.hydrateQueueTrack(queueTrack, thumbnailQuality))
+                }
             }
 
             Radio(
@@ -65,11 +69,12 @@ class RadioGenerator(
         } catch (e: Exception) {
             // Last-resort parachute. If YouTube changes /next yet again, keep
             // ordinary playback usable instead of crashing the extension.
+            val hydratedFallback = trackLoader.hydrateQueueTrack(track, thumbnailQuality)
             Radio(
                 id = id,
                 title = "${track.title} Radio",
                 extras = mutableMapOf(
-                    "tracks" to json.encodeToString(listOf(track))
+                    "tracks" to json.encodeToString(listOf(hydratedFallback))
                 )
             )
         }
@@ -84,8 +89,11 @@ class RadioGenerator(
     private suspend fun generateFromArtist(artist: Artist): Radio {
         val id = "radio_${artist.id}"
         val result = api.ArtistRadio.getArtistRadio(artist.id, null).getOrThrow()
-        val tracks = result.items.map { song: dev.toastbits.ytmkt.model.external.mediaitem.YtmSong ->
-            song.toTrack(thumbnailQuality)
+        val tracks = buildList {
+            for (song in result.items) {
+                val queueTrack = song.toTrack(thumbnailQuality)
+                add(trackLoader.hydrateQueueTrack(queueTrack, thumbnailQuality))
+            }
         }
 
         return Radio(
