@@ -1,20 +1,18 @@
-name: build fartnite
+name: diagnose queue metadata source
 
-on:
+"on":
   push:
     branches:
-      - main
-  workflow_dispatch:
+      - diag-queue-source-043
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout diagnostic branch
         uses: actions/checkout@v4
 
       - name: Setup JDK 17
@@ -24,41 +22,115 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Cook build variables
+      - name: Verify ytm-kt remains frozen
+        shell: bash
+        run: grep -q 'ytmkt = "0.4.3"' gradle/libs.versions.toml
+
+      - name: Inject diagnostic source markers
         shell: bash
         run: |
-          name=$(grep '^extName=' gradle.properties | cut -d'=' -f2-)
-          id=$(grep '^extId=' gradle.properties | cut -d'=' -f2-)
-          version="v$(git rev-parse --short=7 HEAD)"
-          message=$(git log -1 --pretty=%B)
+          python3 - <<'PY'
+          from pathlib import Path
 
-          echo "NAME=$name Extension" >> "$GITHUB_ENV"
-          echo "TAG=$id" >> "$GITHUB_ENV"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "APP_PATH=app/build/${id}-${version}.eapk" >> "$GITHUB_ENV"
+          conv_path = Path('ext/src/main/java/dev/brahmkshatriya/echo/extension/Convertors.kt')
+          conv = conv_path.read_text()
 
-          printf '## %s Extension\n%s\n' "$name" "$message" > commit.txt
-          chmod +x ./gradlew
+          old_sig = '''fun YtmSong.toTrack(
+              quality: ThumbnailProvider.Quality,
+              setId: String? = null
+          ): Track {'''
+          new_sig = '''fun YtmSong.toTrack(
+              quality: ThumbnailProvider.Quality,
+              setId: String? = null,
+              diagnosticSource: String? = "YTM"
+          ): Track {'''
+          if old_sig not in conv:
+              raise SystemExit('toTrack signature target not found')
+          conv = conv.replace(old_sig, new_sig, 1)
 
-      - name: Build debug EAPK
+          old_block = '''        val trackType = Track.Type.Song
+        
+        val playableStatus = Track.Playable.Yes
+        
+        Track(
+            id = id,
+            title = name ?: "Unknown",
+            type = trackType,
+            artists = artists?.map { it.toArtist(quality) } ?: emptyList(),'''
+          new_block = '''        val trackType = Track.Type.Song
+        
+        val playableStatus = Track.Playable.Yes
+        val convertedArtists = artists?.map { it.toArtist(quality) } ?: emptyList()
+        val hasUsableArtist = convertedArtists.any { artist ->
+            val artistName = artist.name?.trim().orEmpty()
+            artistName.isNotEmpty() &&
+                !artistName.equals("Unknown", ignoreCase = true) &&
+                !artistName.equals("Unknown Artist", ignoreCase = true)
+        }
+        val displayTitle = if (!hasUsableArtist && diagnosticSource != null) {
+            "${name ?: "Unknown"} [SRC:$diagnosticSource]"
+        } else {
+            name ?: "Unknown"
+        }
+        
+        Track(
+            id = id,
+            title = displayTitle,
+            type = trackType,
+            artists = convertedArtists,'''
+          if old_block not in conv:
+              raise SystemExit('toTrack body target not found')
+          conv_path.write_text(conv.replace(old_block, new_block, 1))
+
+          radio_path = Path('ext/src/main/java/dev/brahmkshatriya/echo/extension/providers/playback/RadioGenerator.kt')
+          radio = radio_path.read_text()
+          radio = radio.replace('song.toTrack(thumbnailQuality)', 'song.toTrack(thumbnailQuality, diagnosticSource = "RADIO")')
+
+          old_catch = '''            Radio(
+                id = id,
+                title = "${track.title} Radio",
+                extras = mutableMapOf(
+                    "tracks" to json.encodeToString(listOf(track))
+                )
+            )'''
+          new_catch = '''            val fallbackHasUsableArtist = track.artists.any { artist ->
+                val artistName = artist.name?.trim().orEmpty()
+                artistName.isNotEmpty() &&
+                    !artistName.equals("Unknown", ignoreCase = true) &&
+                    !artistName.equals("Unknown Artist", ignoreCase = true)
+            }
+            val diagnosticFallback = if (fallbackHasUsableArtist) {
+                track
+            } else {
+                track.copy(title = "${track.title} [SRC:RADIO-FALLBACK]")
+            }
+            Radio(
+                id = id,
+                title = "${track.title} Radio",
+                extras = mutableMapOf(
+                    "tracks" to json.encodeToString(listOf(diagnosticFallback))
+                )
+            )'''
+          if old_catch not in radio:
+              raise SystemExit('radio fallback target not found')
+          radio_path.write_text(radio.replace(old_catch, new_catch, 1))
+
+          print('Diagnostic markers injected')
+          PY
+          git diff --check -- ext/src/main/java/dev/brahmkshatriya/echo/extension/Convertors.kt ext/src/main/java/dev/brahmkshatriya/echo/extension/providers/playback/RadioGenerator.kt
+          git diff -- ext/src/main/java/dev/brahmkshatriya/echo/extension/Convertors.kt ext/src/main/java/dev/brahmkshatriya/echo/extension/providers/playback/RadioGenerator.kt
+
+      - name: Build diagnostic EAPK
+        shell: bash
         run: |
+          set -euo pipefail
+          chmod +x ./gradlew
           ./gradlew assembleDebug
-          cp app/build/outputs/apk/debug/app-debug.apk "${{ env.APP_PATH }}"
+          cp app/build/outputs/apk/debug/app-debug.apk fartnite-queue-source-diagnostic.eapk
 
-      - name: Upload build artifact
+      - name: Upload diagnostic build
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.TAG }}-${{ env.VERSION }}
-          path: ${{ env.APP_PATH }}
+          name: fartnite-queue-source-diagnostic
+          path: fartnite-queue-source-diagnostic.eapk
           if-no-files-found: error
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          make_latest: true
-          tag_name: ${{ env.VERSION }}
-          body_path: commit.txt
-          name: ${{ env.VERSION }}
-          files: ${{ env.APP_PATH }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
