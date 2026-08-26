@@ -39,7 +39,8 @@ class EchoEnhancedSongEndpoint(
             // Check if we need legacy data for missing extras (lyricsId, relatedId, isLiked)
             val needsLegacyExtras = ytmTrack.extras["lyricsId"] == null || 
                                      ytmTrack.extras["relatedId"] == null ||
-                                     ytmTrack.extras["isLiked"] == null
+                                     ytmTrack.extras["isLiked"] == null ||
+                                     !ytmTrack.hasUsableArtistName()
             
             if (needsLegacyExtras) {
                 println("ytm-kt track missing extras, fetching from legacy endpoint")
@@ -70,6 +71,13 @@ class EchoEnhancedSongEndpoint(
         }
     }
     
+    private fun Track.hasUsableArtistName(): Boolean = artists.any { artist ->
+        val name = artist.name?.trim().orEmpty()
+        name.isNotEmpty() &&
+            !name.equals("Unknown", ignoreCase = true) &&
+            !name.equals("Unknown Artist", ignoreCase = true)
+    }
+
     /**
      * Build merged extras map from all available sources.
      */
@@ -126,11 +134,14 @@ class EchoEnhancedSongEndpoint(
             // Prefer ytm album, fallback to legacy
             album = ytmTrack.album ?: legacyTrack?.album,
             
-            // Prefer ytm artists if non-empty, fallback to legacy then original
-            artists = if (ytmTrack.artists.isNotEmpty()) 
-                ytmTrack.artists 
-            else 
-                legacyTrack?.artists ?: fallbackTrack.artists,
+            // A nameless ytm-kt artist is not complete metadata. Prefer it only
+            // when it has a real display name; otherwise use the custom /next parser.
+            artists = when {
+                ytmTrack.hasUsableArtistName() -> ytmTrack.artists
+                legacyTrack?.hasUsableArtistName() == true -> legacyTrack.artists
+                fallbackTrack.hasUsableArtistName() -> fallbackTrack.artists
+                else -> ytmTrack.artists.ifEmpty { legacyTrack?.artists ?: fallbackTrack.artists }
+            },
             
             // Add streamables - THIS WAS MISSING!
             streamables = streamables,

@@ -314,6 +314,23 @@ data class YoutubeiNextResponse(
             val menu_artist: String? =
                 menu.menuRenderer.getArtist()?.menuNavigationItemRenderer?.navigationEndpoint?.browseEndpoint?.browseId
             if (menu_artist != null) {
+                // Ordinary YouTube channels can carry a valid browse/channel ID without
+                // MUSIC_PAGE_TYPE_ARTIST. Match that ID back to the byline run so we keep
+                // the uploader name instead of producing a nameless artist.
+                val matchingChannelRun: TextRun? = longBylineText.runs.orEmpty().firstOrNull { run ->
+                    run.navigationEndpoint?.browseEndpoint?.browseId == menu_artist && run.text.isNotBlank()
+                }
+                if (matchingChannelRun != null) {
+                    return@runCatching listOf(
+                        YtmArtist(
+                            id = menu_artist,
+                            name = matchingChannelRun.text
+                        )
+                    )
+                }
+
+                // Preserve the previous fallback for response shapes where the uploader
+                // text is not itself navigable.
                 val artist_title: TextRun? =
                     longBylineText.runs?.firstOrNull { it.navigationEndpoint == null }
                 if (artist_title != null) {
