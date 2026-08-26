@@ -127,7 +127,6 @@ class RealNewPipeVideoFormatsEndpoint {
                 mimeType = "Video-$mimeType-${height}p${fps}fps",
                 bitrate = height * fps * 1000, 
                 url = urlStr,  
-                loudness_db = null
             )
             height to format  
         }
@@ -166,7 +165,6 @@ class RealNewPipeVideoFormatsEndpoint {
                     mimeType = "Audio-$mimeType-$formatName",
                     bitrate = bitrate,
                     url = urlStr,
-                    loudness_db = null
                 )
             }
             .sortedWith(
@@ -233,7 +231,6 @@ class RealNewPipeVideoFormatsEndpoint {
                 mimeType = "Muxed-$mimeType-${height}p${fps}fps",
                 bitrate = height * fps * 1000,
                 url = urlStr,
-                loudness_db = null
             )
             height to format
         }

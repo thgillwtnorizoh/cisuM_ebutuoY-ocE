@@ -57,7 +57,7 @@ suspend fun MediaItemLayout.toShelf(
                     null
                 }
             },
-            more = view_more?.getBrowseParamsData()?.browse_id?.let { id ->
+            more = view_more?.getBrowseParamsData()?.browseId?.let { id ->
                 if (id.startsWith("FEmusic_")) {
                     println("Skipping view more for special browse_id: $id")
                     return@let null

@@ -81,7 +81,7 @@ open class EchoSongEndPoint(override val api: YoutubeiApi) : ApiEndpoint() {
             cover = cover,
             artists = artists.map { it.toArtist(ThumbnailProvider.Quality.HIGH) },
             album = album?.toAlbum(false, ThumbnailProvider.Quality.HIGH),
-            duration = duration,
+            duration = duration?.inWholeMilliseconds,
             extras = mutableMapOf<String, String>().apply {
                 relatedBrowseId?.let { put("relatedId", it) }
                 lyricsBrowseId?.let { put("lyricsId", it) }
