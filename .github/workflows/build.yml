@@ -1,18 +1,16 @@
-name: build fartnite
+name: test queue uploader fix
 
-on:
+"on":
   push:
     branches:
-      - main
-  workflow_dispatch:
+      - fix-queue-unknown-uploader-043
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -24,41 +22,24 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Cook build variables
+      - name: Verify frozen dependency
         shell: bash
         run: |
-          name=$(grep '^extName=' gradle.properties | cut -d'=' -f2-)
-          id=$(grep '^extId=' gradle.properties | cut -d'=' -f2-)
-          version="v$(git rev-parse --short=7 HEAD)"
-          message=$(git log -1 --pretty=%B)
+          set -euo pipefail
+          grep -q 'ytmkt = "0.4.3"' gradle/libs.versions.toml
+          git diff --check 37698b0bebba2f845f5f7b6377bed3c5df2dc3cd..HEAD
 
-          echo "NAME=$name Extension" >> "$GITHUB_ENV"
-          echo "TAG=$id" >> "$GITHUB_ENV"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "APP_PATH=app/build/${id}-${version}.eapk" >> "$GITHUB_ENV"
-
-          printf '## %s Extension\n%s\n' "$name" "$message" > commit.txt
-          chmod +x ./gradlew
-
-      - name: Build debug EAPK
+      - name: Build candidate EAPK
+        shell: bash
         run: |
+          set -euo pipefail
+          chmod +x ./gradlew
           ./gradlew assembleDebug
-          cp app/build/outputs/apk/debug/app-debug.apk "${{ env.APP_PATH }}"
+          cp app/build/outputs/apk/debug/app-debug.apk fartnite-queue-uploader-043-candidate.eapk
 
-      - name: Upload build artifact
+      - name: Upload candidate
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.TAG }}-${{ env.VERSION }}
-          path: ${{ env.APP_PATH }}
+          name: fartnite-queue-uploader-043-candidate
+          path: fartnite-queue-uploader-043-candidate.eapk
           if-no-files-found: error
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          make_latest: true
-          tag_name: ${{ env.VERSION }}
-          body_path: commit.txt
-          name: ${{ env.VERSION }}
-          files: ${{ env.APP_PATH }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
