@@ -1,64 +1,74 @@
-name: build fartnite
+name: inspect ytm-kt 0.6.1
 
 on:
   push:
     branches:
-      - main
-  workflow_dispatch:
+      - inspect-ytmkt-061
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  inspect:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout radio-fixed base
         uses: actions/checkout@v4
 
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: zulu
-          java-version: '17'
-          cache: gradle
-
-      - name: Cook build variables
+      - name: Resolve and collect ytm-kt 0.6.1
         shell: bash
         run: |
-          name=$(grep '^extName=' gradle.properties | cut -d'=' -f2-)
-          id=$(grep '^extId=' gradle.properties | cut -d'=' -f2-)
-          version="v$(git rev-parse --short=7 HEAD)"
-          message=$(git log -1 --pretty=%B)
+          set -euo pipefail
+          mkdir -p inspection/downloads inspection/extracted
 
-          echo "NAME=$name Extension" >> "$GITHUB_ENV"
-          echo "TAG=$id" >> "$GITHUB_ENV"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "APP_PATH=app/build/${id}-${version}.eapk" >> "$GITHUB_ENV"
+          curl -fsSL 'https://search.maven.org/solrsearch/select?q=v:%220.6.1%22%20AND%20(g:%22dev.toastbits.ytmkt%22%20OR%20g:%22dev.toastbits%22)&rows=100&wt=json' \
+            -o inspection/search.json
 
-          printf '## %s Extension\n%s\n' "$name" "$message" > commit.txt
-          chmod +x ./gradlew
+          jq -r '.response.docs[] | [.g,.a,.v,.p] | @tsv' inspection/search.json \
+            | tee inspection/artifacts.tsv
 
-      - name: Build debug EAPK
-        run: |
-          ./gradlew assembleDebug
-          cp app/build/outputs/apk/debug/app-debug.apk "${{ env.APP_PATH }}"
+          while IFS=$'\t' read -r group artifact version packaging; do
+            [ -n "$group" ] || continue
+            base="https://repo.maven.apache.org/maven2/${group//./\/}/$artifact/$version"
+            prefix="inspection/downloads/$artifact-$version"
 
-      - name: Upload build artifact
+            curl -fsSL "$base/$artifact-$version.pom" -o "$prefix.pom" || true
+            curl -fsSL "$base/$artifact-$version.module" -o "$prefix.module" || true
+            curl -fsSL "$base/$artifact-$version-sources.jar" -o "$prefix-sources.jar" || true
+          done < inspection/artifacts.tsv
+
+          for jar in inspection/downloads/*-sources.jar; do
+            [ -f "$jar" ] || continue
+            name=$(basename "$jar" .jar)
+            mkdir -p "inspection/extracted/$name"
+            unzip -q "$jar" -d "inspection/extracted/$name"
+          done
+
+          find inspection/extracted -type f | sort > inspection/source-files.txt
+
+          grep -RniE \
+            'YTMLoadSongEndpoint|YTMGetSongFeedEndpoint|YoutubeiApi|YoutubeiAuthenticationState|videoDetails|author|channelId|addApiHeadersWithAuthenticated|SAPISID|cookie|SongFeed|RadioBuilder|RadioEndpoint|isAudioOnly' \
+            inspection/extracted > inspection/relevant-grep.txt || true
+
+          {
+            echo '=== exact high-value source files ==='
+            find inspection/extracted -type f \
+              \( -name 'YTMLoadSongEndpoint.kt' \
+              -o -name 'YTMGetSongFeedEndpoint.kt' \
+              -o -name 'YoutubeiApi.kt' \
+              -o -name 'YoutubeiAuthenticationState.kt' \
+              -o -name 'YtmArtist.kt' \
+              -o -name 'YtmSong.kt' \
+              -o -name '*Radio*Endpoint.kt' \
+              -o -name '*Radio*.kt' \) -print | sort
+          } > inspection/high-value-files.txt
+
+          cat inspection/artifacts.tsv
+          cat inspection/high-value-files.txt
+
+      - name: Upload inspection bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.TAG }}-${{ env.VERSION }}
-          path: ${{ env.APP_PATH }}
+          name: ytm-kt-0.6.1-inspection
+          path: inspection
           if-no-files-found: error
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          make_latest: true
-          tag_name: ${{ env.VERSION }}
-          body_path: commit.txt
-          name: ${{ env.VERSION }}
-          files: ${{ env.APP_PATH }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
