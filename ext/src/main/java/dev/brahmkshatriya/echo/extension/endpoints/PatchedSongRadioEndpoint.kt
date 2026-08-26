@@ -156,9 +156,8 @@ class PatchedSongRadioEndpoint(
                 ?.get("browseEndpointContextMusicConfig").obj()
                 ?.get("pageType").str()
 
-            // Artist endpoints normally declare MUSIC_PAGE_TYPE_ARTIST. Some
-            // responses omit the config, where a UC... channel id is still a
-            // strong artist signal.
+            // Keep normal YouTube Music artist parsing strict. A separate
+            // menu-ID fallback below handles ordinary YouTube uploader channels.
             if (pageType != "MUSIC_PAGE_TYPE_ARTIST" &&
                 !(pageType == null && id.startsWith("UC"))) {
                 return@mapNotNull null
@@ -167,7 +166,59 @@ class PatchedSongRadioEndpoint(
             YtmArtist(id = id, name = name)
         }.distinctBy { it.id }
 
-        return artists.takeIf { it.isNotEmpty() }
+        if (artists.isNotEmpty()) {
+            return artists
+        }
+
+        // Ordinary YouTube videos in the radio queue can expose the uploader as
+        // a normal channel rather than MUSIC_PAGE_TYPE_ARTIST. The menu still
+        // carries the correct ARTIST/channel browse ID, so match that exact ID
+        // back to the byline run and recover its display name.
+        val menuArtistId = extractMenuArtistId(renderer) ?: return null
+        val matchingRun = runs.asSequence()
+            .mapNotNull { it.obj() }
+            .firstOrNull { run ->
+                val browseId = run["navigationEndpoint"].obj()
+                    ?.get("browseEndpoint").obj()
+                    ?.get("browseId").str()
+                val name = run["text"].str()
+                browseId == menuArtistId && !name.isNullOrBlank()
+            }
+            ?: return null
+
+        return listOf(
+            YtmArtist(
+                id = menuArtistId,
+                name = matchingRun["text"].str()
+            )
+        )
+    }
+
+    private fun extractMenuArtistId(renderer: JsonObject): String? {
+        val items = renderer["menu"].obj()
+            ?.get("menuRenderer").obj()
+            ?.get("items").arr()
+            ?: return null
+
+        for (item in items) {
+            val navigationItem = item.obj()
+                ?.get("menuNavigationItemRenderer").obj()
+                ?: continue
+            val iconType = navigationItem["icon"].obj()
+                ?.get("iconType").str()
+            if (iconType != "ARTIST") {
+                continue
+            }
+
+            val browseId = navigationItem["navigationEndpoint"].obj()
+                ?.get("browseEndpoint").obj()
+                ?.get("browseId").str()
+            if (!browseId.isNullOrBlank()) {
+                return browseId
+            }
+        }
+
+        return null
     }
 
     private fun extractContinuation(panel: JsonObject): String? {
