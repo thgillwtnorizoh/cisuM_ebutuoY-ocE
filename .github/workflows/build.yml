@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -27,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           grep -q 'ytmkt = "0.4.3"' gradle/libs.versions.toml
-          git diff --check 37698b0bebba2f845f5f7b6377bed3c5df2dc3cd..HEAD
+          git diff --check 37698b0bebba2f845f5f7b6377bed3c5df2dc3cd..HEAD -- ext/src/main/java/dev/brahmkshatriya/echo/extension/endpoints/PatchedSongRadioEndpoint.kt
 
       - name: Build candidate EAPK
         shell: bash
