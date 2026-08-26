@@ -22,7 +22,6 @@ jobs:
         with:
           distribution: zulu
           java-version: '17'
-          cache: gradle
 
       - name: Cook build variables
         shell: bash
@@ -40,9 +39,23 @@ jobs:
           printf '## %s Extension\n%s\n' "$name" "$message" > commit.txt
           chmod +x ./gradlew
 
+      - name: Purge project build state
+        shell: bash
+        run: |
+          ./gradlew --stop || true
+          rm -rf .gradle build app/build ext/build
+
+      - name: Compile extension migration probe
+        run: |
+          ./gradlew :ext:compileKotlin \
+            --refresh-dependencies \
+            --no-build-cache \
+            --no-configuration-cache \
+            --stacktrace
+
       - name: Build debug EAPK
         run: |
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-build-cache --no-configuration-cache
           cp app/build/outputs/apk/debug/app-debug.apk "${{ env.APP_PATH }}"
 
       - name: Upload build artifact
