@@ -1,0 +1,36 @@
+name: diagnostic fartnite trace
+
+on:
+  push:
+    branches:
+      - diag-fartnite-causal-trace-043
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+          cache: gradle
+
+      - name: Build diagnostic EAPK
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
+          SHA="$(git rev-parse --short=7 HEAD)"
+          cp app/build/outputs/apk/debug/app-debug.apk "fartnite-trace-v${SHA}.eapk"
+
+      - name: Upload diagnostic EAPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: fartnite-trace-${{ github.sha }}
+          path: fartnite-trace-v*.eapk
+          if-no-files-found: error

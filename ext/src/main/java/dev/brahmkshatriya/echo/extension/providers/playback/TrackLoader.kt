@@ -5,6 +5,7 @@ import dev.brahmkshatriya.echo.common.models.Track
 import dev.brahmkshatriya.echo.extension.auth.YouTubeAuthManager
 import dev.brahmkshatriya.echo.extension.endpoints.EchoEnhancedSongEndpoint
 import dev.brahmkshatriya.echo.extension.streaming.YouTubeStreamResolver
+import dev.brahmkshatriya.echo.extension.utils.FartniteTrace
 import dev.toastbits.ytmkt.model.external.ThumbnailProvider
 
 
@@ -17,14 +18,44 @@ class TrackLoader(
         track: Track,
         thumbnailQuality: ThumbnailProvider.Quality
     ): Track {
+        val trace = FartniteTrace()
+        trace.event(
+            "TrackLoader.loadTrackDetails",
+            "ENTER id=${track.id} inputArtists=${FartniteTrace.artists(track)} extrasKeys=${track.extras.keys.sorted()}"
+        )
 
         try {
-            authManager.ensureVisitorId().getOrNull()
+            val visitorResult = authManager.ensureVisitorId()
+            trace.event(
+                "YouTubeAuthManager.ensureVisitorId",
+                "RETURN success=${visitorResult.isSuccess} visitorPresent=${visitorResult.getOrNull() != null} error=${FartniteTrace.error(visitorResult.exceptionOrNull())}"
+            )
         } catch (e: Exception) {
+            trace.event(
+                "YouTubeAuthManager.ensureVisitorId",
+                "THROW error=${FartniteTrace.error(e)} continuing=true"
+            )
             println("Failed to ensure visitor ID in loadTrack: ${e.message}")
         }
 
-        return enhancedSongEndpoint.loadEnhancedTrack(track.id, track, thumbnailQuality)
+        trace.event(
+            "TrackLoader.loadTrackDetails",
+            "CALL EchoEnhancedSongEndpoint.loadEnhancedTrack id=${track.id}"
+        )
+
+        val loaded = enhancedSongEndpoint.loadEnhancedTrack(
+            track.id,
+            track,
+            thumbnailQuality,
+            trace
+        )
+
+        trace.event(
+            "TrackLoader.loadTrackDetails",
+            "EXIT id=${loaded.id} outputArtists=${FartniteTrace.artists(loaded)} extrasKeys=${loaded.extras.keys.sorted()}"
+        )
+
+        return trace.attach(loaded)
     }
 
     suspend fun loadStreamableMedia(
