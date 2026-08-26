@@ -15,100 +15,66 @@ jobs:
       - name: Checkout radio-fixed base
         uses: actions/checkout@v4
 
-      - name: Collect ytm-kt 0.6.1 GitLab source
+      - name: Compare v0.6.1 with legacy lines
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p inspection
-
           REMOTE='https://gitlab.com/syk.sh/ytm-kt.git'
-          git ls-remote --heads --tags "$REMOTE" > inspection/remote-refs.txt
 
-          git clone -q "$REMOTE" inspection/repo
-          cd inspection/repo
+          git clone -q "$REMOTE" inspection/upstream
+          cd inspection/upstream
 
-          git tag --sort=-version:refname > ../tags.txt
-          git branch -a > ../branches.txt
+          git rev-parse v0.6.1 > ../v061-commit.txt
+          git rev-parse origin/legacy > ../legacy-commit.txt
+          git rev-parse origin/spmp > ../spmp-commit.txt
 
-          if git rev-parse -q --verify 'refs/tags/0.6.1' >/dev/null; then
-            TARGET='0.6.1'
-          elif git rev-parse -q --verify 'refs/tags/v0.6.1' >/dev/null; then
-            TARGET='v0.6.1'
-          else
-            echo 'No 0.6.1 tag found' >&2
-            cat ../tags.txt >&2
-            exit 2
-          fi
+          for ref in v0.6.1 origin/legacy origin/spmp; do
+            safe=$(echo "$ref" | tr '/.' '__')
+            mkdir -p "../refs/$safe"
+            git archive "$ref" | tar -x -C "../refs/$safe"
 
-          git checkout -q --detach "$TARGET"
-          git rev-parse HEAD > ../target-commit.txt
-          git log -1 --format=fuller > ../target-commit-details.txt
-          git log --oneline --decorate -30 > ../recent-log.txt
-          find . -type f -not -path './.git/*' | sort > ../source-files.txt
-
-          BASE=''
-          for candidate in 0.5.0-legacy v0.5.0-legacy 0.5.0 v0.5.0; do
-            if git rev-parse -q --verify "refs/tags/$candidate" >/dev/null; then
-              BASE="$candidate"
-              break
-            fi
+            {
+              echo "=== $ref ==="
+              git log -1 --format=fuller "$ref"
+              echo
+              echo '--- version hints ---'
+              git grep -n -E '0\.[0-9]+\.[0-9]+(-legacy)?|project-version-name|versionName' "$ref" -- \
+                'gradle/**' '*.gradle.kts' '*.properties' 'README.md' 2>/dev/null | head -120 || true
+            } > "../$safe-info.txt"
           done
-          printf '%s\n' "$BASE" > ../comparison-base.txt
 
-          if [ -n "$BASE" ]; then
-            git log --oneline --decorate "$BASE..$TARGET" > ../changes-since-0.5.txt
-            git diff --stat "$BASE..$TARGET" > ../diff-stat-since-0.5.txt
-            git diff "$BASE..$TARGET" -- \
+          git diff --stat origin/legacy..v0.6.1 > ../legacy-to-v061-stat.txt
+          git diff --stat origin/spmp..v0.6.1 > ../spmp-to-v061-stat.txt
+
+          for base in origin/legacy origin/spmp; do
+            safe=$(echo "$base" | tr '/.' '__')
+            git diff "$base..v0.6.1" -- \
               'library/src/**/YTMLoadSongEndpoint.kt' \
+              'library/src/**/parseSongResponse.kt' \
               'library/src/**/YTMGetSongFeedEndpoint.kt' \
               'library/src/**/YoutubeiApi.kt' \
               'library/src/**/YoutubeiAuthenticationState.kt' \
+              'library/src/**/YoutubeiRequestData.kt' \
               'library/src/**/*Radio*.kt' \
               'library/src/**/YtmArtist.kt' \
               'library/src/**/YtmSong.kt' \
-              > ../focused-diff-since-0.5.patch || true
-          fi
-
-          mkdir -p ../high-value
-          find . -type f \
-            \( -name 'YTMLoadSongEndpoint.kt' \
-            -o -name 'YTMGetSongFeedEndpoint.kt' \
-            -o -name 'YoutubeiApi.kt' \
-            -o -name 'YoutubeiAuthenticationState.kt' \
-            -o -name 'YtmArtist.kt' \
-            -o -name 'YtmSong.kt' \
-            -o -name '*Radio*Endpoint.kt' \
-            -o -name '*Radio*.kt' \
-            -o -name 'build.gradle.kts' \
-            -o -name 'gradle.properties' \
-            -o -name 'README.md' \) \
-            -not -path './.git/*' -print0 \
-            | while IFS= read -r -d '' f; do
-                dest="../high-value/${f#./}"
-                mkdir -p "$(dirname "$dest")"
-                cp "$f" "$dest"
-              done
-
-          grep -RniE \
-            'videoDetails|author|channelId|addApiHeadersWithAuthenticated|SAPISID|cookie|authentication|SongFeed|RadioBuilder|RadioEndpoint|isAudioOnly|visitorData|accountName' \
-            . --exclude-dir=.git > ../relevant-grep.txt || true
+              > "../$safe-to-v061-focused.patch" || true
+          done
 
           cd ..
-          rm -rf repo/.git
-          tar -czf ytm-kt-0.6.1-source.tar.gz repo
+          rm -rf upstream
 
-          echo '=== tag ==='
-          cat target-commit.txt
-          echo '=== available tags ==='
-          cat tags.txt
-          echo '=== comparison base ==='
-          cat comparison-base.txt
-          echo '=== changes ==='
-          cat changes-since-0.5.txt 2>/dev/null || true
+          echo '=== v0.6.1 ==='
+          cat v0_6_1-info.txt
+          echo '=== legacy ==='
+          cat origin_legacy-info.txt
+          echo '=== spmp ==='
+          cat origin_spmp-info.txt
 
       - name: Upload inspection bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ytm-kt-0.6.1-gitlab-source
+          name: ytm-kt-0.6.1-legacy-comparison
           path: inspection
           if-no-files-found: error
